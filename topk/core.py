@@ -40,7 +40,7 @@ def _weaker(first, second):
 
 def _beats(score, seq, worst):
     """新候选是否严格强于当前最弱的在位候选；同分时在位者胜出。"""
-    return score >= worst.score
+    return score > worst.score
 
 
 class Entry:
@@ -140,7 +140,7 @@ class StreamTopK:
         if isinstance(n, bool) or not isinstance(n, int) or n < 0:
             raise ValueError("n 必须是非负整数")
         live = [entry for entry in self._heap if not entry.deleted]
-        live.sort(key=lambda entry: -entry.score)
+        live.sort(key=lambda entry: (-entry.score, entry.seq))
         return live[:n]
 
     # ------------------------------------------------------------------ 写入
@@ -153,22 +153,23 @@ class StreamTopK:
         """
         key = str(key)
         score = _normalize_score(score)
+        self._seen += 1
         if key not in self._known:
             self._known.add(key)
             self._distinct += 1
         entry = self._index.get(key)
-        if entry is not None:
+        if entry is not None and not entry.deleted:
             self._update(entry, score)
             self._updated += 1
             self._accepted += 1
             return True
-        self._seen += 1
-        if self._live <= self._k:
+        self._purge()
+        if self._live < self._k:
             self._insert(key, score)
             self._accepted += 1
             return True
-        worst = self._worst_live()
-        if worst is not None and _beats(score, self._next_seq, worst):
+        worst = self._heap[0]
+        if _beats(score, self._next_seq, worst):
             self._evict_worst()
             self._insert(key, score)
             self._accepted += 1
@@ -194,6 +195,7 @@ class StreamTopK:
         if entry is None or entry.deleted:
             return False
         entry.deleted = True
+        self._live -= 1
         self._discarded += 1
         return True
 
@@ -247,9 +249,9 @@ class StreamTopK:
         entry.score = score
         pos = self._heap.index(entry)
         if score > previous:
-            self._sift_up(pos)
-        else:
             self._sift_down(pos)
+        else:
+            self._sift_up(pos)
 
     def _sift_up(self, pos):
         """把 pos 处的候选往堆顶方向推，直到父节点不比它弱。"""
@@ -269,7 +271,13 @@ class StreamTopK:
             left = 2 * pos + 1
             if left >= size:
                 return
-            if not _weaker(heap[left], heap[pos]):
+            right = left + 1
+            candidate = pos
+            if _weaker(heap[left], heap[candidate]):
+                candidate = left
+            if right < size and _weaker(heap[right], heap[candidate]):
+                candidate = right
+            if candidate == pos:
                 return
-            heap[pos], heap[left] = heap[left], heap[pos]
-            pos = left
+            heap[pos], heap[candidate] = heap[candidate], heap[pos]
+            pos = candidate
